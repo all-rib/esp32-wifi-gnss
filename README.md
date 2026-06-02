@@ -16,7 +16,7 @@ and `protocols/http_server/async_handlers` examples, the FreeRTOS
 `basic_freertos_smp_usage` queue example, the FreeRTOS software timer API, and
 the GPIO blink example. The OTA path is reduced from ESP-IDF's
 `system/ota/native_ota_example`. GNSS parsing and UART2 baud scanning are
-adapted from `/home/allan/git/personal/usb-serial-mocker/main/main.c`.
+adapted from my personal usb-serial-mocking repository.
 
 The `/stream` endpoint sends selected original NMEA bytes directly as HTTP chunks
 with content type `application/octet-stream`. The `/write` endpoint temporarily
