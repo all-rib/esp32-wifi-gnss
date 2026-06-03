@@ -34,6 +34,7 @@
 #include "freertos/timers.h"
 #include "psa/crypto.h"
 
+#include "app_version.h"
 #include "ota_update.h"
 
 #define OTA_REQUEST_QUEUE_LENGTH 1
@@ -279,7 +280,8 @@ static esp_err_t ota_status_get_handler(httpd_req_t *req)
 
 	snprintf(response,
 		 sizeof(response),
-		 "running=%s\nboot=%s\nconfirmation_pending=%s\nrollback_possible=%s\nnext_slot=%s\nnext_slot_bytes=%u\n",
+		 "version=%s\nrunning=%s\nboot=%s\nconfirmation_pending=%s\nrollback_possible=%s\nnext_slot=%s\nnext_slot_bytes=%u\n",
+		 app_version_string(),
 		 running != NULL ? running->label : "<none>",
 		 boot != NULL ? boot->label : "<none>",
 		 ota_confirmation_pending_get() ? "yes" : "no",

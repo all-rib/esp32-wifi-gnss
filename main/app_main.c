@@ -7,13 +7,17 @@
  */
 
 #include "esp_err.h"
+#include "esp_log.h"
 #include "nvs_flash.h"
 
+#include "app_version.h"
 #include "generic_task.h"
 #include "gnss.h"
 #include "http_stream.h"
 #include "ota_update.h"
 #include "wifi_ap.h"
+
+static const char *TAG = "app_main";
 
 static void init_nvs(void)
 {
@@ -56,4 +60,7 @@ void app_main(void)
 	ESP_ERROR_CHECK(wifi_ap_start_task());
 	ESP_ERROR_CHECK(gnss_stack_start_tasks());
 	ESP_ERROR_CHECK(http_stream_start_tasks());
+
+	ESP_LOGI(TAG, "version:%s", app_version_string());
+	ESP_LOGI(TAG, APP_BOOT_NORMAL_MARKER);
 }

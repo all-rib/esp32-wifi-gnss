@@ -205,6 +205,113 @@ make monitor PORT=/dev/ttyUSB1 BAUD=115200
 Run `make help` to list wrapper targets. The project currently builds for the
 classic `esp32` target.
 
+## Hardware OTA test
+
+The hardware integration runner builds two firmware identities, flashes the
+factory-test image over USB UART, checks the UART boot log, connects the host to
+the ESP32 Wi-Fi AP, uploads the main image through `/flash`, waits for the OTA
+boot log, confirms the pending image through `/flash/confirm`, sends a paced
+mock GNSS route through `/write`, and finally makes a best-effort check for
+live GNSS data.
+
+The full test needs:
+
+```text
+USB UART: /dev/ttyUSB0-99 or /dev/ttyACM0-99
+SoftAP:   AgroLine-GNSS / agroline123 by default
+HTTP:     http://192.168.1.1/flash
+```
+
+Build the two test images without touching hardware:
+
+```sh
+make test-hardware-builds
+```
+
+Run only the local UART portion, stopping before Wi-Fi/OTA:
+
+```sh
+make test-hardware-boot
+```
+
+Run the full test when the host can be moved to the ESP32 Wi-Fi network:
+
+```sh
+make test-hardware
+```
+
+If you connect the host Wi-Fi yourself and do not want the runner to touch
+`wpa_supplicant`/DHCP, use:
+
+```sh
+make test-hardware-manual-wifi
+```
+
+`make test-harware` is kept as a typo alias for the same target.
+
+The runner prints only step status by default. Normal build, flash, serial,
+network, and HTTP details go under `build/hardware-tests/logs/` and are shown
+only when a step fails.
+
+While a step is running in an interactive terminal, the runner refreshes one
+temporary line such as `Upload: Working.. (UART flash) 34s`. Force or disable
+that line with `TEST_PROGRESS=always` or `TEST_PROGRESS=off`.
+
+```text
+Build: success
+Serial-available: success (/dev/ttyUSB0)
+Upload: success
+First-boot: success (version:763dd27-dirty+49a60c0cf6bd-factory-test)
+Network available: success and connected
+OTA flash: success
+Second-boot: success (version:763dd27-dirty+83de7f45b5aa-main)
+Binary confirmation: success
+GNSS mocking: success
+real GNSS: warning (no GNSS data available)
+```
+
+By default the full target stops the host `wpa_supplicant`/DHCP stack for
+`wlan0`, starts a temporary `wpa_supplicant` for `AgroLine-GNSS`, obtains DHCP,
+and then verifies `http://192.168.1.1/flash/status`. That requires root or
+passwordless `sudo`; if the host is already connected manually, run the Python
+runner with `--no-manage-wifi`.
+
+The runner auto-discovers `/dev/ttyUSB*` and `/dev/ttyACM*` devices and probes
+them with `esptool`. Override the port, HTTP base URL, Wi-Fi interface, or AP
+credentials when needed:
+
+```sh
+make test-hardware PORT=/dev/ttyUSB1 TEST_BASE_URL=http://192.168.1.1
+make test-hardware TEST_WIFI_IFACE=wlan0 TEST_WIFI_SSID=AgroLine-GNSS TEST_WIFI_PASSWORD=agroline123
+```
+
+The same runner is exposed through generated Ninja targets:
+
+```sh
+ninja -C build hardware-test-builds
+ninja -C build hardware-test-boot
+ninja -C build hardware-test-manual-wifi
+ninja -C build hardware-test
+```
+
+For Ninja, pass runtime overrides through the environment:
+
+```sh
+ESP_TEST_PORT=/dev/ttyUSB1 ESP_TEST_BASE_URL=http://192.168.1.1 ninja -C build hardware-test
+```
+
+The firmware prints deterministic UART markers:
+
+```text
+version:<git-describe>+<esp-idf-elf-sha-prefix>-factory-test
+version:<git-describe>+<esp-idf-elf-sha-prefix>-main
+ALL_TASKS_STARTED
+```
+
+The firmware identity uses ESP-IDF's configured embedded ELF SHA prefix, so the
+test does not need a preliminary hash build. The OTA upload still uses the final
+binary SHA-256 in the `X-Firmware-SHA256` header.
+
 ### ESP-IDF commands
 
 The equivalent explicit ESP-IDF workflow is:
@@ -253,15 +360,18 @@ ESP-IDF v6.0.1 also generates a target named `monitor`, but its CMake wrapper
 returns immediately in this local setup instead of keeping the terminal
 attached. Exit `serial-monitor` with `Ctrl+]`.
 
-The default Wi-Fi credentials are:
+The Kconfig default Wi-Fi credentials are:
 
 ```text
 SSID:     esp32-stream
 Password: esp32stream
 ```
 
-The credentials, station count, HTTP client count, and GNSS timer window can be
-changed under `ESP32 stream configuration` in `menuconfig`.
+An ignored local `sdkconfig` can override those values. This workspace currently
+uses `AgroLine-GNSS` / `agroline123`, which is why CMake may report a
+default-value mismatch during configuration. The credentials, station count,
+HTTP client count, and GNSS timer window can be changed under
+`ESP32 stream configuration` in `menuconfig`.
 
 After connecting to the AP:
 
