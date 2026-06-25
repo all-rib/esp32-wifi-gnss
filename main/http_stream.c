@@ -27,6 +27,7 @@
 #include "generic_task.h"
 #include "gnss.h"
 #include "http_stream.h"
+#include "log_stream.h"
 #include "ota_update.h"
 
 #define HTTP_REQUEST_QUEUE_LENGTH CONFIG_STREAM_MAX_HTTP_CLIENTS
@@ -42,6 +43,7 @@
 
 typedef struct {
 	httpd_req_t *req;
+	const char *content_type;
 } http_async_request_t;
 
 static const char *TAG = "http_stream";
@@ -91,13 +93,13 @@ static bool stream_client_is_connected(httpd_req_t *req)
 	return true;
 }
 
-static esp_err_t stream_response_send(httpd_req_t *req, uint8_t worker_index)
+static esp_err_t stream_response_send(httpd_req_t *req, uint8_t worker_index, const char *content_type)
 {
 	uint32_t last_sequence = 0;
 
 	ESP_LOGI(TAG, "stream client connected on worker %u", worker_index);
 
-	httpd_resp_set_type(req, "application/octet-stream");
+	httpd_resp_set_type(req, content_type);
 	httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
 	/*
@@ -145,7 +147,7 @@ static esp_err_t stream_response_send(httpd_req_t *req, uint8_t worker_index)
 	}
 }
 
-static esp_err_t stream_request_queue(httpd_req_t *req)
+static esp_err_t stream_request_queue(httpd_req_t *req, const char *content_type)
 {
 	httpd_req_t *copy = NULL;
 	ESP_RETURN_ON_ERROR(httpd_req_async_handler_begin(req, &copy),
@@ -163,6 +165,7 @@ static esp_err_t stream_request_queue(httpd_req_t *req)
 
 	const http_async_request_t async_req = {
 		.req = copy,
+		.content_type = content_type,
 	};
 
 	if (xQueueSend(s_http_request_queue, &async_req, 0) != pdTRUE) {
@@ -176,7 +179,7 @@ static esp_err_t stream_request_queue(httpd_req_t *req)
 
 static esp_err_t read_get_handler(httpd_req_t *req)
 {
-	if (stream_request_queue(req) == ESP_OK) {
+	if (stream_request_queue(req, "application/octet-stream") == ESP_OK) {
 		return ESP_OK;
 	}
 
@@ -190,6 +193,29 @@ static const httpd_uri_t read_uri = {
 	.uri = "/stream",
 	.method = HTTP_GET,
 	.handler = read_get_handler,
+};
+
+/*
+ * Same GNSS bytes as GET /stream. The only difference is the MIME type: a
+ * browser refuses to render application/octet-stream inline and downloads it
+ * instead, while text/plain displays in the tab and keeps appending live.
+ */
+static esp_err_t view_get_handler(httpd_req_t *req)
+{
+	if (stream_request_queue(req, "text/plain") == ESP_OK) {
+		return ESP_OK;
+	}
+
+	httpd_resp_set_status(req, "503 Service Unavailable");
+	httpd_resp_set_type(req, "text/plain");
+	httpd_resp_sendstr(req, "all stream workers are in use\n");
+	return ESP_OK;
+}
+
+static const httpd_uri_t view_uri = {
+	.uri = "/view",
+	.method = HTTP_GET,
+	.handler = view_get_handler,
 };
 
 static esp_err_t write_request_queue(httpd_req_t *req)
@@ -267,7 +293,7 @@ static void http_stream_worker_task(void *arg)
 		}
 
 		generic_led_client_connected();
-		stream_response_send(async_req.req, worker_index);
+		stream_response_send(async_req.req, worker_index, async_req.content_type);
 		generic_led_client_disconnected();
 
 		/*
@@ -400,21 +426,24 @@ esp_err_t http_stream_stack_init(void)
 	httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 
 	/*
-	 * Reserve sockets for two /stream clients, one /write client, one /flash
+	 * Reserve sockets for two /stream-or-/view clients (they share the same
+	 * bounded worker pool), one /write client, one /flash client, one /log
 	 * client, and one excess request that can receive an HTTP error. Wi-Fi
 	 * station count and HTTP socket count are separate limits.
 	 */
 	config.lru_purge_enable = false;
-	config.max_uri_handlers = 6;
-	config.max_open_sockets = CONFIG_STREAM_MAX_HTTP_CLIENTS + 3;
+	config.max_uri_handlers = 8;
+	config.max_open_sockets = CONFIG_STREAM_MAX_HTTP_CLIENTS + 4;
 
 	httpd_handle_t server = NULL;
 	ESP_LOGI(TAG, "starting HTTP server on port %d for %d read clients and one writer",
 		 config.server_port, CONFIG_STREAM_MAX_HTTP_CLIENTS);
 	ESP_ERROR_CHECK(httpd_start(&server, &config));
 	ESP_ERROR_CHECK(httpd_register_uri_handler(server, &read_uri));
+	ESP_ERROR_CHECK(httpd_register_uri_handler(server, &view_uri));
 	ESP_ERROR_CHECK(httpd_register_uri_handler(server, &write_uri));
 	ESP_ERROR_CHECK(ota_update_register_http_handlers(server));
+	ESP_ERROR_CHECK(log_stream_register_http_handlers(server));
 
 	return ESP_OK;
 }

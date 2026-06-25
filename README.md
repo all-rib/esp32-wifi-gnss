@@ -4,6 +4,8 @@ ESP-IDF SoftAP with GNSS read and mock-input endpoints:
 
 ```text
 GET  http://192.168.1.1/stream
+GET  http://192.168.1.1/view
+GET  http://192.168.1.1/log
 POST http://192.168.1.1/write
 POST http://192.168.1.1/flash
 GET  http://192.168.1.1/flash/status
@@ -19,8 +21,21 @@ the GPIO blink example. The OTA path is reduced from ESP-IDF's
 adapted from my personal usb-serial-mocking repository.
 
 The `/stream` endpoint sends selected original NMEA bytes directly as HTTP chunks
-with content type `application/octet-stream`. The `/write` endpoint temporarily
-replaces UART2 parser input with an uploaded GNSS mock stream.
+with content type `application/octet-stream`. A browser cannot render that MIME
+type inline and downloads it instead. `/view` sends the exact same bytes from
+the same bounded worker pool but with content type `text/plain`, so a browser
+tab displays it live instead of downloading it; use `/stream` for a file/program
+to consume and `/view` to watch it in a browser. The `/write` endpoint
+temporarily replaces UART2 parser input with an uploaded GNSS mock stream.
+
+`/log` tails the same formatted output `idf.py monitor` prints over USB serial.
+`esp_log_set_vprintf()` installs a hook that copies every `ESP_LOGx` line into a
+4 KB ring buffer and still forwards to the original handler, so the serial
+console is unaffected. One worker drains that ring buffer per connected
+`/log` client; a new line wakes the worker instead of polling. Only one `/log`
+client is supported at a time, matching the single mock GNSS writer above. A
+client that connects after boot still receives whatever recent history (up to
+4 KB) is still held in the ring buffer before it continues live.
 
 ## Task layout
 
@@ -34,9 +49,10 @@ timer-service tasks. This application adds these unpinned tasks:
 | `gnss_uart` | `gnss_init_task()` | Drains locked UART2 input. Its bytes are ignored while an HTTP GNSS override is active. |
 | `gnss_filter` | `gnss_stack_init()` | Selects the lowest-HDOP candidate in each timer window and overwrites a one-item publication queue. |
 | `http_stack` | `http_stream_stack_init()` | Drains the latest publication queue, updates a shared snapshot, and wakes stream workers. |
-| `http_worker` | `http_stream_stack_init()` | Owns one asynchronous `/stream` response. Two instances run by default. |
+| `http_worker` | `http_stream_stack_init()` | Owns one asynchronous `/stream` or `/view` response. Two instances run by default and both URIs draw from the same bounded pool. |
 | `http_write` | `http_stream_stack_init()` | Owns the single asynchronous `/write` upload and forwards its bytes into the GNSS parser. |
 | `ota_worker` | `ota_update_stack_init()` | Receives one asynchronous `/flash` upload, verifies it, writes the inactive OTA slot, and selects it for the next boot. |
+| `log_worker` | `log_stream_start_task()` | Owns the single asynchronous `/log` response and tails the ring buffer filled by the `esp_log_set_vprintf()` capture hook. |
 | `generic` | `generic_stack_init()` | Event-driven LED template task. GPIO2 blinks five times at startup, remains off while idle, and toggles after each packet successfully sent to an HTTP client. |
 
 The HTTP daemon stays available while endless responses run in worker tasks.
@@ -91,6 +107,41 @@ curl --limit-rate 480 --data-binary @mock.nmea http://192.168.1.1/write
 
 Keep one `/stream` request open in another terminal to observe the selected
 output. A second simultaneous `/write` request receives `409 Conflict`.
+
+### Direct UART mock input (no Wi-Fi)
+
+`POST /write` requires joining the ESP32's SoftAP, which drops the host off
+its normal network for the duration of the upload. On a bench where GPIO16
+(UART2 RX) is wired directly to the same USB-serial adapter used for
+flashing/console (`/dev/ttyUSB0` by default), a mock route can instead be
+fed straight into the real antenna line, with no Wi-Fi involved:
+
+```sh
+git/public/Smainex/AgroLine/unity-gps/tools/mock_gps_serial.sh \
+    -p /dev/ttyUSB0 -f 10 -y \
+    git/public/Smainex/AgroLine/unity-gps/tools/teste.gps
+```
+
+This is genuinely indistinguishable from a real antenna to the firmware:
+bytes land on UART2 RX and go through the normal `gnss_init_task` baud scan,
+`nmea_parser_feed()`, GGA/RMC pairing, and HDOP filter — none of the `/write`
+override machinery in `http_stream.c` is involved. Match `-p`'s baud to one
+of `UART2_BAUD_SCAN_RATES` in `gnss.c` (`mock_gps_serial.sh` defaults to
+`115200`, the fastest of the six); the scanner cycles through all of them
+every ~4.15 s and will lock onto whichever rate the script is actually
+writing at. No antenna needs to be connected for this path — the scan loop
+runs forever in its own task regardless, and SoftAP/HTTP startup never waits
+on it.
+
+`-f` sets the movement-cycle rate in Hz (one flush per `$G.RMC` line); use
+`-f 10` to replay `teste.gps`/`route5_gnss.gps` at their recorded 0.1 s
+cadence, or omit `-f` for the script's default 0.9 Hz pacing. `-t <seconds>`
+switches to a fixed per-line delay instead. Press Enter while it's running
+to pause/resume.
+
+Because this shares the same cable as flashing and the boot/log console, do
+not run `make monitor` or `idf.py monitor` at the same time as the mock
+script — both want exclusive access to `/dev/ttyUSB0`.
 
 ## LED indication
 

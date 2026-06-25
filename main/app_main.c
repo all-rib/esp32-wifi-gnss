@@ -14,6 +14,7 @@
 #include "generic_task.h"
 #include "gnss.h"
 #include "http_stream.h"
+#include "log_stream.h"
 #include "ota_update.h"
 #include "wifi_ap.h"
 
@@ -37,6 +38,14 @@ static void init_nvs(void)
 
 void app_main(void)
 {
+	/*
+	 * Install the log capture hook before anything else logs. It only swaps a
+	 * function pointer, so it has no init-order dependency, and capturing from
+	 * the first line keeps GET /log close to what a serial monitor attached at
+	 * power-on would have shown.
+	 */
+	ESP_ERROR_CHECK(log_stream_stack_init());
+
 	init_nvs();
 
 	/*
@@ -60,6 +69,7 @@ void app_main(void)
 	ESP_ERROR_CHECK(wifi_ap_start_task());
 	ESP_ERROR_CHECK(gnss_stack_start_tasks());
 	ESP_ERROR_CHECK(http_stream_start_tasks());
+	ESP_ERROR_CHECK(log_stream_start_task());
 
 	ESP_LOGI(TAG, "version:%s", app_version_string());
 	ESP_LOGI(TAG, APP_BOOT_NORMAL_MARKER);
